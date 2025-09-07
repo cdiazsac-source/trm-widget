@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Widget TRM - Conversor</title>
+<style>
+  :root{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;--bg:#ffffff;--card:#0b5666;--accent:#ff8a00;--muted:#666;}
+  body{margin:0;background:var(--bg);color:#111;}
+  .wrap{max-width:420px;margin:18px auto;padding:14px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,.08);background:#fff;border:4px solid var(--card)}
+  h1{font-size:16px;margin:0 0 8px;color:#fff;background:var(--card);padding:8px;border-radius:6px}
+  .row{display:flex;gap:8px;align-items:center;margin:8px 0}
+  .rate{font-size:22px;font-weight:700}
+  .muted{color:var(--muted);font-size:13px}
+  input[type="number"]{width:100%;padding:8px;border-radius:6px;border:1px solid #ddd;font-size:15px}
+  select{padding:8px;border-radius:6px;border:1px solid #ddd}
+  button{background:var(--accent);color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer}
+  .result{font-weight:700;font-size:18px;margin-top:8px}
+  .small{font-size:12px;color:var(--muted)}
+  .controls{display:flex;gap:8px}
+  footer{margin-top:10px;font-size:12px;color:var(--muted);text-align:right}
+</style>
+</head>
+<body>
+  <div class="wrap" id="widget">
+    <h1>TRM - Conversor (en vivo)</h1>
+
+    <div class="row">
+      <div>
+        <div class="small">TRM (último registrado)</div>
+        <div class="rate" id="trmValue">—</div>
+        <div class="muted small" id="trmDate">cargando...</div>
+      </div>
+      <div style="margin-left:auto">
+        <button id="refreshBtn">Actualizar</button>
+      </div>
+    </div>
+
+    <div style="margin-top:8px">
+      <div class="small">Conversión</div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <input id="amount" type="number" step="0.01" placeholder="Cantidad (ej: 100)" value="1"/>
+        <select id="direction">
+          <option value="usd_to_cop">USD → COP</option>
+          <option value="cop_to_usd">COP → USD</option>
+        </select>
+      </div>
+      <div class="result" id="result">—</div>
+      <div class="small muted" id="updateInfo">Última actualización: —</div>
+      <div style="display:flex;justify-content:space-between;margin-top:10px">
+        <div class="small muted" id="status">Estado: inicializando...</div>
+        <div class="small muted">Actualiza automáticamente cada 60s</div>
+      </div>
+    </div>
+
+    <footer>
+      Fuente: Portal de Datos Abiertos (Superintendencia / datos.gov.co)
+    </footer>
+  </div>
+
+<script>
+(async function(){
+  // Config
+  const API_URL = encodeURI('https://www.datos.gov.co/resource/mcec-87by.json?$order=vigencia%20DESC&$limit=1');
+  const REFRESH_SECONDS = 60;
+
+  // Elementos
+  const trmValueEl = document.getElementById('trmValue');
+  const trmDateEl = document.getElementById('trmDate');
+  const amountEl = document.getElementById('amount');
+  const directionEl = document.getElementById('direction');
+  const resultEl = document.getElementById('result');
+  const updateInfoEl = document.getElementById('updateInfo');
+  const statusEl = document.getElementById('status');
+  const refreshBtn = document.getElementById('refreshBtn');
+
+  let currentTRM = null;
+  let lastFetched = null;
+  let timerId = null;
+
+  function formatNumber(n){
+    if(n==null || isNaN(n)) return '—';
+    return Number(n).toLocaleString('es-CO', {maximumFractionDigits:2});
+  }
+
+  function findNumericField(obj){
+    // Busca la llave que probablemente contenga el valor numérico
+    const keys = Object.keys(obj);
+    for(const k of keys){
+      if(/valor|trm|tasa|cambio|price|value/i.test(k)) return k;
+    }
+    // fallback: primer campo numérico
+    for(const k of keys){
+      const v = obj[k];
+      if(typeof v === 'number') return k;
+      if(typeof v === 'string' && /^[\d,.]+$/.test(v)) return k;
+    }
+    return null;
+  }
+
+  async function fetchTRM(){
+    statusEl.textContent = 'Estado: consultando API...';
+    try{
+      const resp = await fetch(API_URL, {cache: 'no-store'});
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      const json = await resp.json();
+      if(!json || !json.length) throw new Error('Sin datos en respuesta');
+      const row = json[0];
+      // detecta campo de valor
+      const key = findNumericField(row);
+      if(!key) throw new Error('No se encontró campo numérico en la respuesta');
+      let raw = row[key];
+      // normalizar valor: eliminar comas y otros
+      const num = parseFloat(String(raw).replace(/[^0-9.\-]/g,''));
+      if(isNaN(num)) throw new Error('Valor TRM no numérico: ' + raw);
+      currentTRM = num;
+      // detectar fecha (vigencia/fecha)
+      const dateKey = Object.keys(row).find(k => /fecha|vigencia|date|emision/i.test(k));
+      const dateVal = dateKey ? row[dateKey] : null;
+      lastFetched = {when: new Date(), apiDate: dateVal || ''};
+
+      // actualizar UI
+      trmValueEl.textContent = formatNumber(currentTRM);
+      trmDateEl.textContent = dateVal ? `vigencia: ${dateVal}` : '';
+      updateInfoEl.textContent = `Última actualización: ${new Date().toLocaleString()}`;
+      statusEl.textContent = 'Estado: TRM cargada correctamente';
+      computeResult();
+    }catch(err){
+      console.error('fetchTRM error', err);
+      statusEl.textContent = 'Error: ' + (err.message || err);
+      trmValueEl.textContent = '—';
+      resultEl.textContent = '—';
+      updateInfoEl.textContent = 'Última actualización: error';
+      currentTRM = null;
+    }
+  }
+
+  function computeResult(){
+    const amt = parseFloat(amountEl.value);
+    if(!currentTRM || isNaN(amt)){
+      resultEl.textContent = '—';
+      return;
+    }
+    if(directionEl.value === 'usd_to_cop'){
+      const res = amt * currentTRM;
+      resultEl.textContent = `${formatNumber(res)} COP`;
+    } else {
+      const res = amt / currentTRM;
+      resultEl.textContent = `${formatNumber(res)} USD`;
+    }
+  }
+
+  // eventos
+  amountEl.addEventListener('input', computeResult);
+  directionEl.addEventListener('change', computeResult);
+  refreshBtn.addEventListener('click', () => { fetchTRM(); });
+
+  // refresco automático
+  async function startAutoRefresh(){
+    await fetchTRM();
+    if(timerId) clearInterval(timerId);
+    timerId = setInterval(fetchTRM, REFRESH_SECONDS * 1000);
+  }
+
+  // iniciar
+  startAutoRefresh();
+
+})();
+</script>
+</body>
+</html>
